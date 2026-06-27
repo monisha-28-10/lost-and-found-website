@@ -15,4 +15,5 @@ https://lost-and-found-website-flame.vercel.app/
 ## Technologies Used
 - HTML
 - CSS
-- JavaScript
+- JavaScripts
+- Supabase 
