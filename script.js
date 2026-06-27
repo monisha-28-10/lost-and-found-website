@@ -1,18 +1,17 @@
+const supabaseUrl = "https://cwmnedvtivvsncxigmwo.supabase.co";
+const supabaseKey = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN3bW5lZHZ0aXZ2c25jeGlnbXdvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI0MTQ0MzIsImV4cCI6MjA5Nzk5MDQzMn0.b2B8k2QioITcCHOov2IelitkGwnB9O-syQ6C8r7h8Bw";
+
+const supabaseClient = supabase.createClient(
+    supabaseUrl,
+    supabaseKey
+);
 // ===== GLOBAL STATE =====
-let items = JSON.parse(localStorage.getItem('lostFoundItems')) || [];
+let items = [];
 let currentPage = 1;
 const itemsPerPage = 6;
 
 // ===== INITIALIZATION =====
-document.addEventListener('DOMContentLoaded', () => {
-    initNavigation();
-    initTheme();
-    initForms();
-    initSearch();
-    renderItems();
-    updateDashboard();
-    renderAdminList();
-});
+
 
 // ===== NAVIGATION =====
 function initNavigation() {
@@ -30,6 +29,40 @@ function initNavigation() {
         document.getElementById('navLinks').classList.toggle('active');
     });
 }
+
+async function loadItems() {
+    showNotification("Fetching item reports...", "info");
+    const { data, error } = await supabaseClient
+        .from("items")
+        .select("*")
+        .order("date", { ascending: false });
+
+    if (error) {
+        console.log(error);
+        showNotification("Failed to load reports!", "error");
+        return;
+    }
+
+    items = data || [];
+    renderItems();
+    updateDashboard();
+    renderAdminList();
+
+    setTimeout(() => {
+        showNotification("Reports loaded successfully!", "success");
+    }, 300);
+}
+
+document.addEventListener('DOMContentLoaded', async() => {
+    initNavigation();
+    initTheme();
+    initForms();
+    initSearch();
+    
+    await loadItems(); 
+
+});
+
 
 function showSection(sectionId) {
     // Hide all sections
@@ -83,6 +116,7 @@ function initForms() {
 
 function handleSubmit(e, type) {
     e.preventDefault();
+    console.log('form submitted, type:', type);
     const prefix = type;
 
     const name = document.getElementById(`${prefix}Name`).value.trim();
@@ -105,20 +139,35 @@ function handleSubmit(e, type) {
     }
 
     // Handle image upload
-    const saveItem = (imageData) => {
+    const saveItem = async(imageData) => {
         const newItem = {
-            id: Date.now(),
             type: type,
             name, category, description, location, date, contact,
-            image: imageData,
+            image_url: imageData,
             status: type,
-            createdAt: new Date().toISOString()
+            created_at: new Date().toISOString()
         };
-        items.push(newItem);
-        saveItems();
-        showNotification(`${type === 'lost' ? 'Lost' : 'Found'} item reported successfully!`, 'success');
+        showNotification("Uploading item...", "info")
+        const { data, error } = await supabaseClient
+            .from("items")
+            .insert([newItem])
+            .select();
+
+        console.log("Inserted:", data);
+        console.log("Error:", error);
+        if (error) {
+            showNotification("Error saving item!", "error");
+            return;
+        }
         e.target.reset();
-        updateDashboard();
+        if (data && data.length > 0) {
+            items.unshift(data[0]); // instantly add to UI memory
+
+            renderItems();
+            updateDashboard();
+            renderAdminList();
+        }
+        showNotification(`${type === 'lost' ? 'Lost' : 'Found'} item reported successfully!`, 'success');
     };
 
     if (imageInput.files && imageInput.files[0]) {
@@ -131,9 +180,7 @@ function handleSubmit(e, type) {
 }
 
 // ===== LOCAL STORAGE =====
-function saveItems() {
-    localStorage.setItem('lostFoundItems', JSON.stringify(items));
-}
+
 
 // ===== SEARCH & FILTER =====
 function initSearch() {
@@ -187,8 +234,8 @@ function renderItems() {
 }
 
 function createItemCard(item) {
-    const imageHTML = item.image
-        ? `<img src="${item.image}" alt="${item.name}" class="item-image">`
+    const imageHTML = item.image_url
+        ? `<img src="${item.image_url}" alt="${item.name}" class="item-image">`
         : `<div class="item-image-placeholder"><i class="fas fa-image"></i></div>`;
 
     const statusClass = `status-${item.status}`;
@@ -251,8 +298,8 @@ function viewItem(id) {
     const item = items.find(i => i.id === id);
     if (!item) return;
 
-    const imageHTML = item.image
-        ? `<img src="${item.image}" alt="${item.name}">`
+    const imageHTML = item.image_url
+        ? `<img src="${item.image_url}" alt="${item.name}">`
         : `<div class="item-image-placeholder"><i class="fas fa-image fa-3x"></i></div>`;
 
     document.getElementById('modalBody').innerHTML = `
@@ -279,15 +326,19 @@ window.addEventListener('click', (e) => {
 });
 
 // ===== CLAIM ITEM =====
-function claimItem(id) {
-    const item = items.find(i => i.id === id);
-    if (item) {
-        item.status = 'claimed';
-        saveItems();
-        renderItems();
-        updateDashboard();
-        showNotification('Item marked as claimed!', 'success');
+async function claimItem(id) {
+    const { error } = await supabaseClient
+        .from("items")
+        .update({ status: "claimed" })
+        .eq("id", id);
+
+    if (error) {
+        console.log(error);
+        return;
     }
+
+    Items(); // refresh UI from DB
+    showNotification('Item marked as claimed!', 'success');
 }
 
 // ===== DASHBOARD STATS =====
@@ -323,14 +374,27 @@ function renderAdminList() {
     `).join('');
 }
 
-function deleteItem(id) {
+async function deleteItem(id) {
     if (!confirm('Are you sure you want to delete this report?')) return;
-    items = items.filter(i => i.id !== id);
-    saveItems();
-    renderAdminList();
-    updateDashboard();
+
+    const { error } = await supabaseClient
+        .from("items")
+        .delete()
+        .eq("id", id);
+
+    if (error) {
+        console.log(error);
+        return;
+    }
+
+    items = items.map(i =>
+    i.id === id ? { ...i, status: "claimed" } : i
+    );
+
     renderItems();
-    showNotification('Item deleted successfully!', 'success');
+    updateDashboard();
+    renderAdminList();
+    showNotification('Item deleawait loadted successfully!', 'success');
 }
 
 // ===== NOTIFICATIONS =====
@@ -343,3 +407,17 @@ function showNotification(message, type = 'info') {
         notification.classList.remove('show');
     }, 3000);
 }
+
+async function testConnection() {
+    const { data, error } = await supabaseClient
+        .from("items")
+        .select("*");
+
+    if (error) {
+        console.log(error);
+    } else {
+        console.log(data);
+    }
+}
+
+testConnection();
